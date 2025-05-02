@@ -1,0 +1,26 @@
+integer minus[integer x, integer y] [
+    integer m. 
+    m = x - y.
+    return m.
+]
+
+void main[] [
+    integer a. 
+    integer b. 
+    integer c. 
+
+    a = 7.
+    b = a.
+    c = a + b.
+
+    disp <- a * b.
+    disp <- c + a.
+
+    c = c * 2.
+
+    disp <- c.
+
+    b = minus(c, a).
+
+    disp <- b. 
+]
