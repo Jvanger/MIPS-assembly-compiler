@@ -156,15 +156,7 @@ class ProgramNode extends ASTnode {
         Codegen.generate(".data");
         Codegen.generate("__nl: .asciiz \"\\n\"");
         
-        // Generate any global variables here
-        // This will be handled by the DeclListNode's codeGen method
-        Codegen.generate(".text");
-        
-        // Setup global _main label for SPIM
-        Codegen.generate(".globl main");
         myDeclList.codeGen();
-        
-        
     }
 
     public void unparse(PrintWriter p, int indent) {
@@ -464,12 +456,9 @@ class VarDeclNode extends DeclNode {
         // Only generate code for global variables here
         if (myId.sym().isGlobal()) {
             // Add this at the top of ProgramNode.codeGen to ensure we're in the data section
-            Codegen.generate(".data");
             if (myType instanceof IntegerNode || myType instanceof BooleanNode) {
                 Codegen.p.println("_" + myId.name() + ": .word 0");
             }
-            // Return to text section after adding variables
-            Codegen.generate(".text");
         }
     }
 
@@ -617,6 +606,7 @@ class FuncDeclNode extends DeclNode {
 
         // Special handling for main function
         if (myId.isMain()) {
+            Codegen.generate(".globl main");
             Codegen.p.println("main:");
         } else {
             Codegen.p.println("_" + myId.name() + ":");
@@ -1016,7 +1006,6 @@ class AssignStmtNode extends StmtNode {
         // Generate code for the assignment expression
         myAssign.codeGen();
         // Pop the result off the stack (we don't need it)
-        //CHANGED
         Codegen.genPop(Codegen.T0);
     }
 
@@ -1058,19 +1047,17 @@ class PostIncStmtNode extends StmtNode {
             id.genAddr();
             
             // Load the variable value
-            //ChaNGED
-            Codegen.genPop(Codegen.T0);
-            
-            // Increment the value
-            Codegen.generateWithComment("addi", "increment value", Codegen.T1, Codegen.T0, String.valueOf(1));
-            
-            // Store back to variable
-            if (id.sym().isGlobal()) {
-                Codegen.generateWithComment("sw", "store incremented value to global", Codegen.T1, id.name());
-            } else {
-                Codegen.generateWithComment("sw", "store incremented value to local", 
-                                           Codegen.T1, Codegen.FP, String.valueOf(id.sym().getOffset()));
-            }
+            Codegen.genPop(Codegen.T1);
+
+            // Load current value from address
+            Codegen.generateIndexed("lw", Codegen.T0, Codegen.T1, 0);
+
+            // Increment value
+            Codegen.generate("addi", Codegen.T0, Codegen.T0, "1");
+
+            // Store incremented value back
+            Codegen.generateIndexed("sw", Codegen.T0, Codegen.T1, 0);           
+           
         } else {
             // Handle more complex lvalues if needed
             // For now, assume only identifiers can be incremented
@@ -1118,21 +1105,22 @@ class PostDecStmtNode extends StmtNode {
             id.genAddr();
             
             // Load the variable value
-            //Changed 
-            Codegen.genPop(Codegen.T0);
-            
-            // Decrement the value
-            Codegen.generateWithComment("addi", "decrement value", Codegen.T1, Codegen.T0, String.valueOf(-1));
-            
-            // Store back to variable
-            if (id.sym().isGlobal()) {
-                Codegen.generateWithComment("sw", "store decremented value to global", Codegen.T1, id.name());
-            } else {
-                Codegen.generateWithComment("sw", "store decremented value to local", 
-                                           Codegen.T1, Codegen.FP, String.valueOf(id.sym().getOffset()));
-            }
-        } 
-    }
+            Codegen.genPop(Codegen.T1);
+
+            // Load current value from address
+            Codegen.generateIndexed("lw", Codegen.T0, Codegen.T1, 0);
+
+            // Decrement value
+            Codegen.generate("addi", Codegen.T0, Codegen.T0, "-1");
+
+            // Store decremented value back
+            Codegen.generateIndexed("sw", Codegen.T0, Codegen.T1, 0);            
+        } else {
+            // Handle more complex lvalues if needed
+            // For now, assume only identifiers can be incremented
+        }
+    } 
+
 
     /****
      * nameAnalysis
@@ -1452,33 +1440,17 @@ class ReadStmtNode extends StmtNode {
             IdNode id = (IdNode)myExp;
             Type type = id.sym().getType();
             
-            if (type.isIntegerType()) {
+            if (type.isIntegerType() || type.isBooleanType()) {
                 // Read an integer
                 Codegen.generateWithComment("li", "system call code for reading integer", Codegen.V0, "5");
-                Codegen.generateWithComment("syscall", "read integer");
+                Codegen.generateWithComment("syscall", "read input");
                 
-                // Store the result into the variable
-                if (id.sym().isGlobal()) {
-                    Codegen.generateWithComment("sw", "store input to global var", 
-                                             Codegen.V0, "_" + id.name());
-                } else {
-                    Codegen.generateWithComment("sw", "store input to local var", 
-                                             Codegen.V0, Codegen.FP, String.valueOf(id.sym().getOffset()));
-                }
-            } else if (type.isBooleanType()) {
-                // Read a boolean (0 for false, 1 for true)
-                Codegen.generateWithComment("li", "system call code for reading integer", Codegen.V0, "5");
-                Codegen.generateWithComment("syscall", "read boolean as integer");
-                
-                // Store the result into the variable
-                if (id.sym().isGlobal()) {
-                    Codegen.generateWithComment("sw", "store input to global var", 
-                                             Codegen.V0, "_" + id.name());
-                } else {
-                    Codegen.generateWithComment("sw", "store input to local var", 
-                                             Codegen.V0, Codegen.FP, String.valueOf(id.sym().getOffset()));
-                }
-            }
+                // Generate address for the variable
+                id.genAddr();
+                Codegen.genPop(Codegen.T1);
+
+                Codegen.generateIndexed("sw", Codegen.V0, Codegen.T1, 0, "store read input");
+            } 
             // Note: String input would require more complex code
         } 
     }
@@ -1546,6 +1518,12 @@ class WriteStmtNode extends StmtNode {
             Codegen.generate("addu", Codegen.SP, Codegen.SP, "4");
             Codegen.generate("li", Codegen.V0, "1");  // Syscall 1 for booleans
             Codegen.generateWithComment("syscall", "print boolean");
+        } else if (type.isStringType()) {
+            // System call to print string
+            Codegen.generateIndexed("lw", Codegen.A0, Codegen.SP, 4, "load string address");
+            Codegen.generate("addu", Codegen.SP, Codegen.SP, "4");
+            Codegen.generate("li", Codegen.V0, "4");  // Syscall 4 for strings
+            Codegen.generateWithComment("syscall", "print string");
         }
         
         // Print a newline
@@ -2853,7 +2831,7 @@ class PlusNode extends ArithmeticExpNode {
         Codegen.genPop(Codegen.T1);
         
         // Add the values
-        Codegen.generateWithComment("add", "add operands", Codegen.T0, Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("add", "add operands", Codegen.T0, Codegen.T1, Codegen.T0);
         
         // Push the result
         Codegen.genPush(Codegen.T0);
@@ -2882,7 +2860,7 @@ class MinusNode extends ArithmeticExpNode {
         Codegen.genPop(Codegen.T1);
         
         // Subtract the values
-        Codegen.generateWithComment("sub", "subtract operands", Codegen.T0, Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("sub", "subtract operands", Codegen.T0, Codegen.T1, Codegen.T0);
         
         // Push the result
         Codegen.genPush(Codegen.T0);
@@ -2911,7 +2889,7 @@ class TimesNode extends ArithmeticExpNode {
         Codegen.genPop(Codegen.T1);
         
         // Multiply the values using mult and mflo
-        Codegen.generateWithComment("mult", "multiply operands", Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("mult", "multiply operands", Codegen.T1, Codegen.T0);
         Codegen.generateWithComment("mflo", "get lower 32 bits of result", Codegen.T0);
         
         // Push the result
@@ -2941,7 +2919,7 @@ class DivideNode extends ArithmeticExpNode {
         Codegen.genPop(Codegen.T1);
         
         // Divide the values using div and mflo
-        Codegen.generateWithComment("div", "divide operands", Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("div", "divide operands", Codegen.T1, Codegen.T0);
         Codegen.generateWithComment("mflo", "get quotient", Codegen.T0);
         
         // Push the result
@@ -3064,7 +3042,7 @@ class GreaterNode extends RelationalExpNode {
         Codegen.genPop(Codegen.T1);
     
         // Compare the values
-        Codegen.generateWithComment("sgt", "check if greater than", Codegen.T0, Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("sgt", "check if greater than", Codegen.T0, Codegen.T1, Codegen.T0);
         
         // Push the result
         Codegen.genPush(Codegen.T0);
@@ -3093,7 +3071,7 @@ class GreaterEqNode extends RelationalExpNode {
         Codegen.genPop(Codegen.T1);
         
         // Compare the values
-        Codegen.generateWithComment("sge", "check if greater than or equal", Codegen.T0, Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("sge", "check if greater than or equal", Codegen.T0, Codegen.T1, Codegen.T0);
         
         // Push the result
         Codegen.genPush(Codegen.T0);
@@ -3122,7 +3100,7 @@ class LessNode extends RelationalExpNode {
         Codegen.genPop(Codegen.T1);
         
         // Compare the values
-        Codegen.generateWithComment("slt", "check if less than", Codegen.T0, Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("slt", "check if less than", Codegen.T0, Codegen.T1, Codegen.T0);
         
         // Push the result
         Codegen.genPush(Codegen.T0);
@@ -3151,7 +3129,7 @@ class LessEqNode extends RelationalExpNode {
         Codegen.genPop(Codegen.T1);
         
         // Compare the values
-        Codegen.generateWithComment("sle", "check if less than or equal", Codegen.T0, Codegen.T0, Codegen.T1);
+        Codegen.generateWithComment("sle", "check if less than or equal", Codegen.T0, Codegen.T1, Codegen.T0);
         
         // Push the result
         Codegen.genPush(Codegen.T0);
